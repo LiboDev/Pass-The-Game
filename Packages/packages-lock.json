@@ -1,5 +1,13 @@
 {
   "dependencies": {
+    "com.passthegame.weapons-enemies": {
+      "version": "file:com.passthegame.weapons-enemies",
+      "depth": 0,
+      "source": "embedded",
+      "dependencies": {
+        "com.unity.inputsystem": "1.17.0"
+      }
+    },
     "com.unity.2d.sprite": {
       "version": "1.0.0",
       "depth": 0,

@@ -19,7 +19,11 @@ public class DungeonLevelManager : MonoBehaviour
     }
 
     [Header("References")]
-    [SerializeField] private CharacterController player;
+    [SerializeField] private Rigidbody player;
+    [SerializeField, Tooltip("Turned to face each spawn point; the player's own rotation is never read")]
+    private PlayerLook look;
+    [SerializeField, Tooltip("Optional; its tethers are dropped before the player is moved")]
+    private Grapple grapple;
     [SerializeField, Tooltip("Optional; gets each level's lines")] private PetFollower pet;
 
     [Header("Levels")]
@@ -79,10 +83,26 @@ public class DungeonLevelManager : MonoBehaviour
 
     private void Teleport(Transform spawnPoint)
     {
-        // A CharacterController overwrites transform writes while it is enabled.
-        player.enabled = false;
-        player.transform.SetPositionAndRotation(
-            spawnPoint.position, Quaternion.Euler(0f, spawnPoint.eulerAngles.y, 0f));
-        player.enabled = true;
+        // A tether still attached across the teleport would snap the player straight back to it.
+        if (grapple)
+        {
+            grapple.ReleaseAll();
+        }
+
+        // Interpolation would draw the jump as a streak across the level, so it is off for the write.
+        RigidbodyInterpolation interpolation = player.interpolation;
+        player.interpolation = RigidbodyInterpolation.None;
+        player.position = spawnPoint.position;
+        player.interpolation = interpolation;
+
+        // A long fall carries a lot of speed; without this it continues into the next level.
+        player.linearVelocity = Vector3.zero;
+        player.angularVelocity = Vector3.zero;
+
+        // Facing lives on the camera rig now - writing this body's rotation would do nothing visible.
+        if (look)
+        {
+            look.SetYaw(spawnPoint.eulerAngles.y);
+        }
     }
 }

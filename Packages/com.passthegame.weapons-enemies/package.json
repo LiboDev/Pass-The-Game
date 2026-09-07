@@ -1,0 +1,20 @@
+{
+  "name": "com.passthegame.weapons-enemies",
+  "version": "1.0.0",
+  "displayName": "Weapons & Enemies System",
+  "description": "Simple, reusable weapon (hitscan or projectile) and enemy (NavMesh chase-and-attack) system. Data-driven via ScriptableObjects, prefab-based, no scene dependencies baked in.",
+  "unity": "6000.3",
+  "dependencies": {
+    "com.unity.inputsystem": "1.17.0"
+  },
+  "keywords": [
+    "weapons",
+    "enemies",
+    "combat",
+    "ai",
+    "navmesh"
+  ],
+  "author": {
+    "name": "Pass The Game"
+  }
+}

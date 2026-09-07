@@ -24,6 +24,17 @@ public static class GameSceneBuilder
     private const string PetObjectName = "Pet";
     private const string PetSpeechObjectName = "Pet Speech";
     private const float EyeDropFromTop = 0.4f; // eye height = capsule height - this, so 1.6 m on a 2 m player
+    private const string FrictionlessPath = "Assets/Settings/PlayerFrictionless.physicsMaterial";
+    private const string CameraRigName = "Camera Rig";
+    private const string PlayerLayerName = "Player";
+    private const string LeftTetherMaterialPath = "Assets/Materials/TetherLeft.mat";
+    private const string RightTetherMaterialPath = "Assets/Materials/TetherRight.mat";
+    // Warm on the left, cool on the right: which line is which has to be readable at a glance mid-swing.
+    private static readonly Color LeftTetherColour = new Color(1f, 0.55f, 0.15f, 1f);
+    private static readonly Color RightTetherColour = new Color(0.25f, 0.78f, 1f, 1f);
+    private const string InteractPromptText = "[F] Interact"; // E belongs to the right hook now
+    private const string OrientationName = "Orientation";
+    private const string EyeTargetName = "EyeTarget";
 
     [MenuItem("Tools/Build Game Scene")]
     public static void Build()
@@ -49,10 +60,10 @@ public static class GameSceneBuilder
     }
 
     /// <summary>
-    /// Fills whatever the FirstPersonController and Interactor in the open scene are missing (fields
-    /// added after the scene was built), adopts a camera as the pitch pivot, and adds the Body capsule
-    /// if there is none. Fields that are already set are left alone, so this is safe to run again
-    /// whenever a new field appears.
+    /// Brings the player in the open scene up to the Rigidbody rig: swaps a leftover CharacterController
+    /// for a Rigidbody and CapsuleCollider, adds the Orientation and EyeTarget children, lifts the camera
+    /// out from under the player into its own rig, and fills whatever references are still empty. Fields
+    /// that are already set are left alone, so this is safe to run again whenever a new field appears.
     /// </summary>
     [MenuItem("Tools/Wire Player In Open Scene")]
     public static void WirePlayer()
@@ -64,36 +75,55 @@ public static class GameSceneBuilder
             return;
         }
 
-        CharacterController capsule = controller.GetComponent<CharacterController>();
+        Transform player = controller.transform;
+        CapsuleCollider capsule = MigrateCapsule(controller);
+        ConfigureBody(controller.gameObject);
+        ApplyPlayerLayer(controller);
 
-        // Crouch and headroom both measure from the feet, so the capsule stands on the pivot.
-        Vector3 footCentre = new Vector3(0f, capsule.height * 0.5f, 0f);
-        if (capsule.center != footCentre)
-        {
-            Undo.RecordObject(capsule, "Centre Player Capsule");
-            capsule.center = footCentre;
-        }
-
-        Transform body = controller.transform.Find("Body");
+        Transform body = player.Find("Body");
         if (body == null)
         {
-            body = BuildBody(controller.transform, capsule);
+            body = BuildBody(player, capsule);
             Undo.RegisterCreatedObjectUndo(body.gameObject, "Add Player Body");
         }
 
         Undo.RecordObject(body, "Fit Player Body");
         FirstPersonController.FitCapsule(body, capsule);
 
-        FillIfEmpty(controller, "cameraPivot", CameraPivot(controller, capsule));
+        Transform orientation = Child(player, OrientationName, Vector3.zero);
+        Transform eyeTarget = Child(player, EyeTargetName, new Vector3(0f, capsule.height - EyeDropFromTop, 0f));
+        PlayerLook look = BuildCameraRig(controller, eyeTarget);
+
+        FillIfEmpty(controller, "orientation", orientation);
+        FillIfEmpty(controller, "eyeTarget", eyeTarget);
         FillIfEmpty(controller, "bodyVisual", body);
         FillIfEmpty(controller, "move", ActionReference("Player/Move"));
-        FillIfEmpty(controller, "look", ActionReference("Player/Look"));
         FillIfEmpty(controller, "jump", ActionReference("Player/Jump"));
         FillIfEmpty(controller, "crouch", ActionReference("Player/Crouch"));
 
+        if (look != null)
+        {
+            FillIfEmpty(look, "orientation", orientation);
+            FillIfEmpty(look, "eyeTarget", eyeTarget);
+            FillIfEmpty(look, "look", ActionReference("Player/Look"));
+        }
+
+        Grapple grapple = BuildGrapple(controller, look != null ? look.transform : null);
+        RelabelInteractPrompt();
+
         if (controller.TryGetComponent(out Interactor interactor))
         {
+            FillIfEmpty(interactor, "eye", look != null ? look.transform : null);
             FillIfEmpty(interactor, "interact", ActionReference("Player/Interact"));
+        }
+
+        // Its player field used to be the CharacterController, so the type change emptied it.
+        DungeonLevelManager levels = Object.FindFirstObjectByType<DungeonLevelManager>();
+        if (levels != null)
+        {
+            FillIfEmpty(levels, "player", controller.GetComponent<Rigidbody>());
+            FillIfEmpty(levels, "look", look);
+            FillIfEmpty(levels, "grapple", grapple);
         }
 
         EditorSceneManager.MarkSceneDirty(controller.gameObject.scene);
@@ -101,12 +131,268 @@ public static class GameSceneBuilder
     }
 
     /// <summary>
-    /// The transform the controller pitches: a camera already parented under the player, otherwise the
-    /// scene's camera adopted under it at eye height. Never creates one - a scene with no camera at all
-    /// is the user's to fix.
+    /// Replaces a CharacterController with a CapsuleCollider of the same shape, keeping the height and
+    /// radius the scene was tuned with. Crouch and headroom both measure from the feet, so the capsule
+    /// stands on the pivot.
     /// </summary>
-    private static Transform CameraPivot(FirstPersonController controller, CharacterController capsule)
+    private static CapsuleCollider MigrateCapsule(FirstPersonController controller)
     {
+        float height = 2f;
+        float radius = 0.4f;
+        if (controller.TryGetComponent(out CharacterController legacy))
+        {
+            height = legacy.height;
+            radius = legacy.radius;
+            Undo.DestroyObjectImmediate(legacy);
+        }
+
+        if (!controller.TryGetComponent(out CapsuleCollider capsule))
+        {
+            capsule = Undo.AddComponent<CapsuleCollider>(controller.gameObject);
+        }
+
+        Undo.RecordObject(capsule, "Shape Player Capsule");
+        capsule.height = height;
+        capsule.radius = radius;
+        capsule.center = new Vector3(0f, height * 0.5f, 0f);
+        capsule.sharedMaterial = Frictionless();
+        return capsule;
+    }
+
+    /// <summary>
+    /// Zero friction on the player, combined by Minimum so no surface can override it. Without this the
+    /// capsule grabs every wall it touches in the air and refuses to slide off slopes.
+    /// </summary>
+    private static PhysicsMaterial Frictionless()
+    {
+        PhysicsMaterial material = AssetDatabase.LoadAssetAtPath<PhysicsMaterial>(FrictionlessPath);
+        if (material != null)
+        {
+            return material;
+        }
+
+        material = new PhysicsMaterial("PlayerFrictionless")
+        {
+            dynamicFriction = 0f,
+            staticFriction = 0f,
+            bounciness = 0f,
+            frictionCombine = PhysicsMaterialCombine.Minimum,
+            bounceCombine = PhysicsMaterialCombine.Minimum,
+        };
+        System.IO.Directory.CreateDirectory("Assets/Settings");
+        AssetDatabase.CreateAsset(material, FrictionlessPath);
+        return material;
+    }
+
+    /// <summary>The controller sets these at play time too; doing it here makes the scene readable.</summary>
+    private static Rigidbody ConfigureBody(GameObject player)
+    {
+        if (!player.TryGetComponent(out Rigidbody body))
+        {
+            body = Undo.AddComponent<Rigidbody>(player);
+        }
+
+        Undo.RecordObject(body, "Configure Player Body");
+        body.mass = 70f;
+        body.useGravity = false;      // FirstPersonController applies its own
+        body.linearDamping = 0f;
+        body.angularDamping = 0f;
+        body.freezeRotation = true;   // PlayerLook owns the facing
+        body.interpolation = RigidbodyInterpolation.Interpolate;
+        body.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+        return body;
+    }
+
+    /// <summary>
+    /// Puts the player on its own layer and takes that layer out of the ground mask. This is not a nicety:
+    /// the ground probe is a sphere cast that starts inside the player's own capsule, so a mask that still
+    /// contains the player hits it every step and the controller never registers as grounded.
+    /// </summary>
+    private static void ApplyPlayerLayer(FirstPersonController controller)
+    {
+        int layer = EnsurePlayerLayer();
+        if (layer < 0)
+        {
+            Debug.LogWarning("No free layer slot for " + PlayerLayerName + " - put the player on its own "
+                + "layer and clear that layer from the controller's Ground Mask by hand.", controller);
+            return;
+        }
+
+        Undo.RecordObject(controller.gameObject, "Set Player Layer");
+        controller.gameObject.layer = layer;
+
+        SerializedObject serialized = new SerializedObject(controller);
+        SerializedProperty mask = serialized.FindProperty("groundMask");
+        if (mask.intValue == 0 || mask.intValue == -1) // Nothing or Everything: never configured
+        {
+            mask.intValue = ~(1 << layer);
+            serialized.ApplyModifiedProperties();
+        }
+    }
+
+    /// <summary>
+    /// Adds the two tethers: a muzzle at each shoulder for the lines to leave from, a world-space
+    /// LineRenderer each, and the action references. Aiming is wired to the camera rig rather than a
+    /// muzzle, so hooks go where the crosshair is.
+    /// </summary>
+    private static Grapple BuildGrapple(FirstPersonController controller, Transform rig)
+    {
+        if (!controller.TryGetComponent(out Grapple grapple))
+        {
+            grapple = Undo.AddComponent<Grapple>(controller.gameObject);
+        }
+
+        Transform player = controller.transform;
+        float shoulder = 0.25f;
+        float shoulderHeight = 1.4f;
+
+        FillIfEmpty(grapple, "eye", rig);
+        FillIfEmpty(grapple, "launch", ActionReference("Player/GrappleLaunch"));
+        FillIfEmpty(grapple, "left.fire", ActionReference("Player/GrappleLeft"));
+        FillIfEmpty(grapple, "right.fire", ActionReference("Player/GrappleRight"));
+        FillIfEmpty(grapple, "left.muzzle", Child(player, "MuzzleLeft", new Vector3(-shoulder, shoulderHeight, 0f)));
+        FillIfEmpty(grapple, "right.muzzle", Child(player, "MuzzleRight", new Vector3(shoulder, shoulderHeight, 0f)));
+        FillIfEmpty(grapple, "left.line", TetherLine(player, "Tether Left", LeftTetherMaterialPath, LeftTetherColour));
+        FillIfEmpty(grapple, "right.line", TetherLine(player, "Tether Right", RightTetherMaterialPath, RightTetherColour));
+
+        // The hooks must not bite the player they are fired from.
+        SerializedObject serialized = new SerializedObject(grapple);
+        SerializedProperty mask = serialized.FindProperty("grappleMask");
+        if (mask.intValue == 0 || mask.intValue == -1)
+        {
+            mask.intValue = ~(1 << controller.gameObject.layer);
+            serialized.ApplyModifiedProperties();
+        }
+
+        return grapple;
+    }
+
+    /// <summary>
+    /// The HUD prompt is authored once and then lives in the scene, so moving Interact off E leaves it
+    /// advertising a key that no longer does anything. Only the stale text is touched.
+    /// </summary>
+    private static void RelabelInteractPrompt()
+    {
+        foreach (Text label in Object.FindObjectsByType<Text>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+        {
+            if (label.text == "[E] Interact")
+            {
+                Undo.RecordObject(label, "Relabel Interact Prompt");
+                label.text = InteractPromptText;
+            }
+        }
+    }
+
+    /// <summary>
+    /// A thin world-space line, off until a hook is out. The colour is reapplied every run rather than
+    /// only on creation, so re-wiring a scene built before the two tethers were told apart recolours it.
+    /// </summary>
+    private static LineRenderer TetherLine(Transform player, string name, string materialPath, Color colour)
+    {
+        Transform existing = player.Find(name);
+        LineRenderer line;
+        if (existing != null && existing.TryGetComponent(out LineRenderer found))
+        {
+            line = found;
+            Undo.RecordObject(line, "Colour " + name);
+        }
+        else
+        {
+            GameObject host = new GameObject(name);
+            host.transform.SetParent(player, false);
+            Undo.RegisterCreatedObjectUndo(host, "Add " + name);
+
+            line = host.AddComponent<LineRenderer>();
+            line.useWorldSpace = true; // the anchor is a world point and must not follow the player
+            line.positionCount = 2;
+            line.widthMultiplier = 0.04f;
+            line.numCapVertices = 2;
+            line.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            line.receiveShadows = false;
+            line.enabled = false;
+        }
+
+        line.sharedMaterial = TetherMaterial(materialPath, colour);
+        line.startColor = colour;
+        line.endColor = colour;
+        return line;
+    }
+
+    private static Material TetherMaterial(string path, Color colour)
+    {
+        Material material = AssetDatabase.LoadAssetAtPath<Material>(path);
+        if (material != null)
+        {
+            return material;
+        }
+
+        material = new Material(Shader.Find("Universal Render Pipeline/Unlit"));
+        material.SetColor("_BaseColor", colour);
+        System.IO.Directory.CreateDirectory("Assets/Materials");
+        AssetDatabase.CreateAsset(material, path);
+        return material;
+    }
+
+    /// <summary>The index of the "Player" layer, adding it to the first free user slot if it is missing.</summary>
+    private static int EnsurePlayerLayer()
+    {
+        int existing = LayerMask.NameToLayer(PlayerLayerName);
+        if (existing >= 0)
+        {
+            return existing;
+        }
+
+        Object[] assets = AssetDatabase.LoadAllAssetsAtPath("ProjectSettings/TagManager.asset");
+        if (assets.Length == 0)
+        {
+            return -1;
+        }
+
+        SerializedObject tagManager = new SerializedObject(assets[0]);
+        SerializedProperty layers = tagManager.FindProperty("layers");
+        for (int i = 8; i < layers.arraySize; i++) // 0-7 are Unity's own and cannot be renamed
+        {
+            SerializedProperty slot = layers.GetArrayElementAtIndex(i);
+            if (string.IsNullOrEmpty(slot.stringValue))
+            {
+                slot.stringValue = PlayerLayerName;
+                tagManager.ApplyModifiedProperties();
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    /// <summary>An empty child at a known local position, created only if it is not there already.</summary>
+    private static Transform Child(Transform parent, string name, Vector3 localPosition)
+    {
+        Transform child = parent.Find(name);
+        if (child != null)
+        {
+            return child;
+        }
+
+        child = new GameObject(name).transform;
+        child.SetParent(parent, false);
+        child.localPosition = localPosition;
+        Undo.RegisterCreatedObjectUndo(child.gameObject, "Add " + name);
+        return child;
+    }
+
+    /// <summary>
+    /// The camera lives outside the player: parented under a Rigidbody it would inherit the interpolated
+    /// pose and jitter. This lifts an existing camera out to a root rig and puts PlayerLook on it. Never
+    /// creates a camera - a scene with none at all is the user's to fix.
+    /// </summary>
+    private static PlayerLook BuildCameraRig(FirstPersonController controller, Transform eyeTarget)
+    {
+        PlayerLook existing = Object.FindFirstObjectByType<PlayerLook>();
+        if (existing != null)
+        {
+            return existing;
+        }
+
         Camera camera = controller.GetComponentInChildren<Camera>(true);
         if (camera == null)
         {
@@ -115,19 +401,19 @@ public static class GameSceneBuilder
 
         if (camera == null)
         {
-            Debug.LogWarning("No camera in the open scene - parent one under " + controller.name
-                + " and assign it as Camera Pivot by hand.", controller);
+            Debug.LogWarning("No camera in the open scene - add one, name it " + CameraRigName
+                + ", and put PlayerLook on it by hand.", controller);
             return null;
         }
 
-        if (camera.transform.parent != controller.transform)
+        if (camera.transform.parent != null)
         {
-            Undo.SetTransformParent(camera.transform, controller.transform, "Parent Camera To Player");
-            camera.transform.localPosition = new Vector3(0f, capsule.height - EyeDropFromTop, 0f);
-            camera.transform.localRotation = Quaternion.identity;
+            Undo.SetTransformParent(camera.transform, null, "Detach Camera From Player");
         }
 
-        return camera.transform;
+        camera.name = CameraRigName;
+        camera.transform.position = eyeTarget.position;
+        return Undo.AddComponent<PlayerLook>(camera.gameObject);
     }
 
     /// <summary>
@@ -180,7 +466,7 @@ public static class GameSceneBuilder
         }
 
         SerializedObject serializedController = new SerializedObject(controller);
-        Transform pivot = serializedController.FindProperty("cameraPivot").objectReferenceValue as Transform;
+        Transform pivot = serializedController.FindProperty("eyeTarget").objectReferenceValue as Transform;
         FillIfEmpty(pet, "target", pivot != null ? pivot : controller.transform);
         FillIfEmpty(pet, "speechLabel", SpeechLabel());
         int frames = FillFramesFromSheet(pet);
@@ -335,20 +621,29 @@ public static class GameSceneBuilder
 
         BuildLight();
         Cube("Ground", null, new Vector3(0f, -0.1f, 0f), new Vector3(20f, 0.2f, 20f));
-        GameObject player = BuildPlayer(out Transform cameraPivot, out Transform body);
+        GameObject player = BuildPlayer(out Transform orientation, out Transform eyeTarget, out Transform body);
+        Transform rig = BuildCameraRigObject(eyeTarget);
         BuildDoorway();
         GameObject prompt = BuildHud();
 
         FirstPersonController controller = player.AddComponent<FirstPersonController>();
-        SetReference(controller, "cameraPivot", cameraPivot);
+        SetReference(controller, "orientation", orientation);
+        SetReference(controller, "eyeTarget", eyeTarget);
         SetReference(controller, "bodyVisual", body);
         SetReference(controller, "move", ActionReference("Player/Move"));
-        SetReference(controller, "look", ActionReference("Player/Look"));
         SetReference(controller, "jump", ActionReference("Player/Jump"));
         SetReference(controller, "crouch", ActionReference("Player/Crouch"));
 
+        PlayerLook look = rig.gameObject.AddComponent<PlayerLook>();
+        SetReference(look, "orientation", orientation);
+        SetReference(look, "eyeTarget", eyeTarget);
+        SetReference(look, "look", ActionReference("Player/Look"));
+
+        ApplyPlayerLayer(controller);
+        BuildGrapple(controller, rig);
+
         Interactor interactor = player.AddComponent<Interactor>();
-        SetReference(interactor, "eye", cameraPivot);
+        SetReference(interactor, "eye", rig);
         SetReference(interactor, "prompt", prompt);
         SetReference(interactor, "interact", ActionReference("Player/Interact"));
 
@@ -378,44 +673,57 @@ public static class GameSceneBuilder
     }
 
     /// <summary>
-    /// A CharacterController with a capsule mesh scaled to match it (invisible from inside, but it casts
-    /// the player's shadow) and the camera as a child pivot at eye height.
+    /// The player body: a Rigidbody and CapsuleCollider, a capsule mesh scaled to match, and the two
+    /// empties the rest of the rig hangs off - Orientation (the heading movement follows) and EyeTarget
+    /// (where the camera rig sits). The camera itself is built outside the player by
+    /// <see cref="BuildCameraRigObject"/>.
     /// </summary>
-    private static GameObject BuildPlayer(out Transform cameraPivot, out Transform body)
+    private static GameObject BuildPlayer(out Transform orientation, out Transform eyeTarget, out Transform body)
     {
         GameObject player = new GameObject("Player");
         player.tag = "Player";
         player.transform.position = new Vector3(0f, 0.1f, -4f);
 
-        CharacterController controller = player.AddComponent<CharacterController>();
-        controller.height = 2f;
-        controller.radius = 0.4f;
-        controller.center = Vector3.up;
+        CapsuleCollider capsule = player.AddComponent<CapsuleCollider>();
+        capsule.height = 2f;
+        capsule.radius = 0.4f;
+        capsule.center = Vector3.up; // feet on the pivot: crouch and headroom both measure from there
+        capsule.sharedMaterial = Frictionless();
 
-        body = BuildBody(player.transform, controller);
+        ConfigureBody(player);
 
-        GameObject cameraObject = new GameObject("Main Camera", typeof(Camera), typeof(AudioListener));
-        cameraObject.tag = "MainCamera";
-        cameraObject.transform.SetParent(player.transform, false);
-        cameraObject.transform.localPosition = new Vector3(0f, 1.6f, 0f);
-
-        Camera camera = cameraObject.GetComponent<Camera>();
-        camera.nearClipPlane = 0.1f;
-        camera.fieldOfView = 70f;
-        camera.GetUniversalAdditionalCameraData();
-
-        cameraPivot = cameraObject.transform;
+        body = BuildBody(player.transform, capsule);
+        orientation = Child(player.transform, OrientationName, Vector3.zero);
+        eyeTarget = Child(player.transform, EyeTargetName, new Vector3(0f, capsule.height - EyeDropFromTop, 0f));
         return player;
     }
 
-    /// <summary>A capsule mesh scaled to the controller: invisible from inside, but it casts the player's shadow.</summary>
-    private static Transform BuildBody(Transform player, CharacterController controller)
+    /// <summary>
+    /// The camera, deliberately a root object rather than a child of the player: PlayerLook follows the
+    /// player's EyeTarget in LateUpdate instead, which is what keeps the view off the Rigidbody's
+    /// interpolated transform and free of jitter.
+    /// </summary>
+    private static Transform BuildCameraRigObject(Transform eyeTarget)
+    {
+        GameObject rig = new GameObject(CameraRigName, typeof(Camera), typeof(AudioListener));
+        rig.tag = "MainCamera";
+        rig.transform.position = eyeTarget.position;
+
+        Camera camera = rig.GetComponent<Camera>();
+        camera.nearClipPlane = 0.1f;
+        camera.fieldOfView = 70f;
+        camera.GetUniversalAdditionalCameraData();
+        return rig.transform;
+    }
+
+    /// <summary>A capsule mesh scaled to the collider: invisible from inside, but it casts the player's shadow.</summary>
+    private static Transform BuildBody(Transform player, CapsuleCollider capsule)
     {
         GameObject body = GameObject.CreatePrimitive(PrimitiveType.Capsule);
         body.name = "Body";
         body.transform.SetParent(player, false);
-        Object.DestroyImmediate(body.GetComponent<Collider>()); // the CharacterController is the collider
-        FirstPersonController.FitCapsule(body.transform, controller);
+        Object.DestroyImmediate(body.GetComponent<Collider>()); // the CapsuleCollider above is the collider
+        FirstPersonController.FitCapsule(body.transform, capsule);
         return body.transform;
     }
 
@@ -431,11 +739,6 @@ public static class GameSceneBuilder
         }
     }
 
-    /// <summary>
-    /// Two posts and a lintel, plus the door hinged on the right post so it swings away from the
-    /// player. The hinge object owns the tag, the collider and the Door script; the panel is only a
-    /// mesh, so the raycast lands on the object that has Interact().
-    /// </summary>
     private static void BuildDoorway()
     {
         GameObject doorway = new GameObject("Doorway");
@@ -491,7 +794,7 @@ public static class GameSceneBuilder
         label.alignment = TextAnchor.MiddleCenter;
         label.color = Color.white;
         label.raycastTarget = false;
-        label.text = "[E] Interact";
+        label.text = InteractPromptText;
 
         prompt.SetActive(false);
         return prompt;

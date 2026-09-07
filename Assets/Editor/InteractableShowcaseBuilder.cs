@@ -462,10 +462,12 @@ public static class InteractableShowcaseBuilder
             interactor = Undo.AddComponent<Interactor>(controller.gameObject);
         }
 
-        Camera eye = controller.GetComponentInChildren<Camera>(true);
+        // The camera rig is a root object, not a child of the player, so look for it by its component.
+        PlayerLook look = Object.FindFirstObjectByType<PlayerLook>();
+        Transform eye = look != null ? look.transform : (Camera.main != null ? Camera.main.transform : null);
         if (eye != null)
         {
-            GameSceneBuilder.FillIfEmpty(interactor, "eye", eye.transform);
+            GameSceneBuilder.FillIfEmpty(interactor, "eye", eye);
         }
 
         SerializedObject serialized = new SerializedObject(interactor);

@@ -62,8 +62,9 @@ public class VehicleController : MonoBehaviour, IInteractable
     private Vector3 centreOfMass = new Vector3(0f, -0.2f, 0f);
 
     private Rigidbody body;
-    private CharacterController playerCapsule;
+    private Rigidbody playerBody;
     private Interactor playerInteractor;
+    private Grapple playerGrapple;
     private Vector2 input;
     private float steerAngle;
     private bool driving;
@@ -81,8 +82,9 @@ public class VehicleController : MonoBehaviour, IInteractable
             return;
         }
 
-        playerCapsule = player.GetComponent<CharacterController>();
+        playerBody = player.GetComponent<Rigidbody>();
         playerInteractor = player.GetComponent<Interactor>();
+        playerGrapple = player.GetComponent<Grapple>(); // optional; the player may have no tethers
         body.centerOfMass = centreOfMass;
 
         float sprungMass = body.mass / wheels.Length;
@@ -128,9 +130,20 @@ public class VehicleController : MonoBehaviour, IInteractable
 
         driving = true;
         enteredFrame = Time.frameCount; // one key press must not get straight back out again
-        player.LookOnly = true;            // mouse look still works in the seat; walking does not
+        player.LookOnly = true;            // the camera rig is its own object, so looking carries on
         playerInteractor.enabled = false;  // its raycast starts inside the car; getting out is read below
-        playerCapsule.enabled = false;     // so the capsule neither collides with the car nor falls out of it
+
+        if (playerGrapple)
+        {
+            playerGrapple.ReleaseAll(); // a joint on a body about to go kinematic drags the car with it
+        }
+
+        // Kinematic and deaf to collisions, so the player neither shoves the car about from the seat nor
+        // falls through its floor. The Rigidbody stays enabled: parenting below is what carries it along.
+        playerBody.linearVelocity = Vector3.zero;
+        playerBody.angularVelocity = Vector3.zero;
+        playerBody.isKinematic = true;
+        playerBody.detectCollisions = false;
 
         player.transform.SetParent(seat);
         player.transform.SetLocalPositionAndRotation(Vector3.zero, Quaternion.identity);
@@ -143,11 +156,14 @@ public class VehicleController : MonoBehaviour, IInteractable
 
         player.transform.SetParent(null);
 
-        // Keep facing wherever the driver was looking, but drop the roll and pitch the car was leaning at.
-        player.transform.SetPositionAndRotation(
-            exit.position, Quaternion.Euler(0f, player.transform.eulerAngles.y, 0f));
+        // Nothing to restore about the facing: PlayerLook kept its own yaw for the whole ride, and
+        // this body's rotation is frozen and never read. Moved while still kinematic, then released.
+        player.transform.position = exit.position;
 
-        playerCapsule.enabled = true;
+        playerBody.isKinematic = false;
+        playerBody.detectCollisions = true;
+        playerBody.linearVelocity = Vector3.zero; // getting out of a moving car must not fling the player
+        playerBody.angularVelocity = Vector3.zero;
         playerInteractor.enabled = true;
         player.LookOnly = false;
     }
