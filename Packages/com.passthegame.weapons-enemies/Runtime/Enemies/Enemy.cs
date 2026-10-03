@@ -44,7 +44,7 @@ namespace PassTheGame.WeaponsEnemies
 
         private void Update()
         {
-            if (dead || !target) return;
+            if (dead || !target || !agent.isOnNavMesh) return;
 
             float sqrDistance = (target.position - transform.position).sqrMagnitude;
             if (sqrDistance <= data.attackRange * data.attackRange)

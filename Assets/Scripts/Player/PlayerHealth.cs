@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.SceneManagement;
 using PassTheGame.WeaponsEnemies;
 
 /// <summary>
@@ -9,6 +10,7 @@ using PassTheGame.WeaponsEnemies;
 public class PlayerHealth : MonoBehaviour, IDamageable
 {
     [SerializeField, Min(1f)] private float maxHealth = 100f;
+    [SerializeField, Min(0f)] private float restartDelay = 1f;
 
     public float Current { get; private set; }
 
@@ -25,6 +27,15 @@ public class PlayerHealth : MonoBehaviour, IDamageable
         if (Current <= 0f)
         {
             Debug.Log($"[{nameof(PlayerHealth)}] died", this);
+            Invoke(nameof(RestartScene), restartDelay);
         }
+    }
+
+    public void Kill(GameObject source) => TakeDamage(Current, source);
+
+    private static void RestartScene()
+    {
+        Scene scene = SceneManager.GetActiveScene();
+        SceneManager.LoadScene(scene.buildIndex);
     }
 }

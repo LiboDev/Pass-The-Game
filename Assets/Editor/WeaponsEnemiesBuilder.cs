@@ -56,6 +56,27 @@ public static class WeaponsEnemiesBuilder
             + "Save the scene (Ctrl+S).", controller);
     }
 
+    /// <summary>Project repair entry point used from Unity's command line.</summary>
+    public static void RepairDungeon()
+    {
+        const string scenePath = "Assets/Scenes/dungeon.unity";
+        var scene = EditorSceneManager.OpenScene(scenePath, OpenSceneMode.Single);
+        Setup();
+
+        Grapple grapple = Object.FindFirstObjectByType<Grapple>(FindObjectsInactive.Include);
+        if (grapple != null)
+        {
+            grapple.enabled = true;
+            EditorUtility.SetDirty(grapple);
+        }
+
+        EditorSceneManager.SaveScene(scene);
+        AssetDatabase.SaveAssets();
+        AssetDatabase.ForceReserializeAssets(new[] { scenePath },
+            ForceReserializeAssetsOptions.ReserializeAssetsAndMetadata);
+        Debug.Log("Dungeon repaired: grappling enabled and combat setup installed.");
+    }
+
     /// <summary>Finds a free layer slot 8+ and names it, or reuses one already named this.</summary>
     private static int EnsureLayer(string name)
     {

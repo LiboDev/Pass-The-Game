@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.AI;
 
 namespace PassTheGame.WeaponsEnemies
 {
@@ -36,7 +37,13 @@ namespace PassTheGame.WeaponsEnemies
             timer = 0f;
 
             Transform spawnPoint = spawnPoints[Random.Range(0, spawnPoints.Length)];
-            Enemy enemy = Instantiate(enemyPrefab, spawnPoint.position, spawnPoint.rotation, spawnParent);
+            if (!NavMesh.SamplePosition(spawnPoint.position, out NavMeshHit hit, 5f, NavMesh.AllAreas))
+            {
+                Debug.LogWarning($"Enemy spawn point '{spawnPoint.name}' is not near a NavMesh.", spawnPoint);
+                return;
+            }
+
+            Enemy enemy = Instantiate(enemyPrefab, hit.position, spawnPoint.rotation, spawnParent);
             enemy.Init(target);
             alive.Add(enemy);
         }

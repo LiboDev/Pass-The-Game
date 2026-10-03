@@ -10,7 +10,8 @@ public class Interactor : MonoBehaviour
 {
     [Header("References")]
     [SerializeField] private Transform eye;
-    [SerializeField, Tooltip("HUD object switched on while an interactable is in view")] private GameObject prompt;
+    [SerializeField, Tooltip("Optional HUD object switched on while an interactable is in view")]
+    private GameObject prompt;
     [SerializeField] private InputActionReference interact;
 
     [Header("Tuning")]
@@ -19,9 +20,9 @@ public class Interactor : MonoBehaviour
 
     private void Awake()
     {
-        if (!eye || !prompt || !interact)
+        if (!eye || !interact)
         {
-            Debug.LogError("Interactor needs eye, prompt and interact assigned", this);
+            Debug.LogError("Interactor needs eye and interact assigned", this);
             enabled = false;
         }
     }
@@ -36,7 +37,10 @@ public class Interactor : MonoBehaviour
             hit.collider.TryGetComponent(out target);
         }
 
-        prompt.SetActive(target != null);
+        if (prompt)
+        {
+            prompt.SetActive(target != null);
+        }
         if (target != null && interact.action.WasPressedThisFrame())
         {
             target.Interact();
