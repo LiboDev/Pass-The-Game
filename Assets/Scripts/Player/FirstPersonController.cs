@@ -25,6 +25,8 @@ public class FirstPersonController : MonoBehaviour
     [SerializeField] private InputActionReference crouch;
     [SerializeField, Tooltip("Optional capsule mesh kept scaled to the CapsuleCollider (see FitCapsule)")]
     private Transform bodyVisual;
+    [SerializeField, Tooltip("The Animator component on your custom character mesh")] 
+    private Animator animator;
 
     [Header("Movement")]
     [SerializeField, Min(0f)] private float walkSpeed = 4f;
@@ -153,6 +155,12 @@ public class FirstPersonController : MonoBehaviour
         }
 
         Crouch();
+
+        if (animator != null)
+        {
+            bool isMoving = move.action.ReadValue<Vector2>().magnitude > 0.05f;
+            animator.SetBool("IsWalking", isMoving && grounded);
+        }
     }
 
     private void FixedUpdate()
